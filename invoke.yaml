@@ -1,0 +1,28 @@
+DEV_DOCKER_COMPOSE: &docker_dev docker-compose.yml
+ENV_FILE: &env_file .env
+
+DOCKER:
+  BUILD_ARGS:
+    - parallel
+
+TEST:
+  FLAGS:
+    - keepdb
+    - parallel 8
+    - settings config.settings.test
+
+CLEAN_ENV:
+  BAK_DIR: /tmp/clean-bak/
+  VSCODE_SETTINGS: &vs_code_settings .vscode
+  BK_FILES:
+    - *env_file
+    - *docker_dev
+    - invoke.yaml
+    - tasks.py
+  BK_FOLDERS:
+    - *vs_code_settings
+    - venv
+    - scratches
+  REMOVE_BACKUP_AFTER_COPY: true
+
+SECONDS_SLEEP: 1
