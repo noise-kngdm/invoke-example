@@ -38,7 +38,6 @@ Available tasks:
   checkmigrations   Check if there are migrations to be applied
   clean             Cleans and rebuild the whole environment to make it light and PHI-free.
   command           Run a django command
-  compilemessages   Update the messages file
   db                Reset and fill the db with sample data
   docker-prune      Run the docker system prune command to remo
   down              Stop all the services
