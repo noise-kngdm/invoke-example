@@ -36,7 +36,7 @@ Available tasks:
   bash              Invoke bash in the specified service. Django by default
   build             Build all the services
   checkmigrations   Check if there are migrations to be applied
-  clean             Cleans and rebuild the whole environment to make it light and PHI-free.
+  clean             Cleans and rebuild the whole environment to make it light.
   command           Run a django command
   db                Reset and fill the db with sample data
   docker-prune      Run the docker system prune command to remo
