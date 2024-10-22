@@ -39,19 +39,21 @@ from pathlib import Path
 from invoke import task, Responder
 from invoke.exceptions import Failure
 
-DJANGO_EXEC = "docker compose exec django"
+DJANGO_EXEC = "docker compose -f {compose_file} exec django"
 
 
 @task
 def down(ctx):
     """Stop all the services"""
-    ctx.run("docker compose down -t0 -v --remove-orphans")
+    ctx.run(
+        f"docker compose --profile debug -f {ctx.DEV_DOCKER_COMPOSE} down -t0 -v --remove-orphans"
+    )
 
 
 @task
 def up(ctx):
     """Create and start the containers"""
-    ctx.run(f"docker compose --profile debug -f {ctx.DEV_DOCKER_COMPOSE} up -d")
+    ctx.run(f"docker compose --profile debug -f {ctx.DEV_DOCKER_COMPOSE} up -d -V")
 
 
 @task(
@@ -60,13 +62,17 @@ def up(ctx):
         "watchers": "Custom watchers that should be used by invoke",
     }
 )
-def command(ctx, command="", watchers=None, executor="/entrypoint.sh"):
+def command(ctx, command="", watchers=None, executor=None, pty=True):
     """Run a django command"""
     if executor is None:
-        executor = "python"
+        executor = ctx.EXECUTOR.PYTHON
     if watchers is None:
         watchers = []
-    ctx.run(f"{DJANGO_EXEC} {executor} ./manage.py {command}", pty=True, watchers=watchers)
+    ctx.run(
+        f"{DJANGO_EXEC.format(compose_file=ctx.DEV_DOCKER_COMPOSE)} {executor} ./manage.py {command}",
+        pty=pty,
+        watchers=watchers,
+    )
 
 
 def unapplied_migrations(ctx) -> bool:
@@ -77,7 +83,10 @@ def unapplied_migrations(ctx) -> bool:
         bool: True if there are unapplied migrations, False otherwise.
     """
     try:
-        eso = ctx.run(f"{DJANGO_EXEC} bash -c 'python manage.py showmigrations'", hide="both")
+        eso = ctx.run(
+            f"{DJANGO_EXEC.format(compose_file=ctx.DEV_DOCKER_COMPOSE)} bash -c 'python manage.py showmigrations'",
+            hide="both",
+        )
         if "[ ]" in eso.stdout:
             return True
     except Exception as e:
@@ -133,7 +142,10 @@ def db(
     while True:
         try:
             command(
-                ctx, command=f"refresh_db {parsed_args} --confirm", executor="/entrypoint.sh", watchers=[responder_y_n]
+                ctx,
+                command=f"refresh_db {parsed_args} --confirm",
+                executor=ctx.EXECUTOR.ENTRYPOINT,
+                watchers=[responder_y_n],
             )
         except KeyboardInterrupt:
             return
@@ -151,7 +163,10 @@ def db(
 )
 def logs(ctx, follow=False, service="django"):
     """Print the logs of a service"""
-    ctx.run(f"docker compose logs {'--follow' if follow else ''} {service}", pty=True)
+    ctx.run(
+        f"docker compose -f {ctx.DEV_DOCKER_COMPOSE} logs {'--follow' if follow else ''} {service}",
+        pty=True,
+    )
 
 
 @task(
@@ -160,13 +175,20 @@ def logs(ctx, follow=False, service="django"):
         "service": "Service that should be built, comma-separated. Defaults to all services.",
     }
 )
-def build(ctx, no_cache=False, service=""):
+def build(ctx, no_cache=False, service="", remove_cache=False, progress_plain=False):
     """Build all the services"""
     append = " ".join(service.split(",")) if service else ""
     docker_args = " ".join(["--" + flag for flag in ctx.DOCKER.BUILD_ARGS])
     if no_cache:
         docker_args += " --no-cache"
-    ctx.run(f"docker compose -f {ctx.DEV_DOCKER_COMPOSE} build {docker_args} {append}", pty=True)
+    if progress_plain:
+        docker_args += " --progress plain"
+    ctx.run(
+        f"docker compose -f {ctx.DEV_DOCKER_COMPOSE} build {docker_args} {append}",
+        pty=True,
+    )
+    if remove_cache:
+        ctx.run("docker builder prune -f", pty=True)
 
 
 def tests_roots(tests):
@@ -205,35 +227,28 @@ def test(ctx, test, keywords="", coverage=False):
 
     command_keywords = "" if not keywords else f"-k {keywords}"
 
-    executer = "coverage run" if coverage else "/entrypoint.sh"
+    executer = "coverage run" if coverage else ctx.EXECUTOR.PYTHON
 
-    command = f"{DJANGO_EXEC} {executer} ./manage.py test {test_flags} {' '.join(tests)} {command_keywords}"
+    command = f"{DJANGO_EXEC.format(compose_file=ctx.DEV_DOCKER_COMPOSE)} {executer} ./manage.py test {test_flags} {' '.join(tests)} {command_keywords}"
 
     ctx.run(command, pty=True)
     if coverage:
         ctx.run(
-            f"{DJANGO_EXEC} coverage combine; {DJANGO_EXEC} coverage report --include='{'/*,'.join(roots)}/*'", pty=True
+            f"{DJANGO_EXEC.format(compose_file=ctx.DEV_DOCKER_COMPOSE)} coverage combine; {DJANGO_EXEC.format(compose_file=ctx.DEV_DOCKER_COMPOSE)} coverage report --include='{'/*,'.join(roots)}/*'",
+            pty=True,
         )
 
 
-@task(
-    help={
-        "merge": "If the migrations should be merged into one file",
-    }
-)
-def makemigrations(ctx, merge=False, empty=False):
+@task
+def makemigrations(ctx):
     """Call the django makemigrations command"""
-
-    if merge:
-        command(ctx, "makemigrations --merge")
-    else:
-        command(ctx, "makemigrations")
+    command(ctx, "makemigrations")
 
 
 @task
 def showmigrations(ctx):
     """Call the django makemigrations command"""
-    command(ctx, "showmigrations")
+    command(ctx, "showmigrations", pty=False)
 
 
 @task
@@ -245,29 +260,25 @@ def sqlmigrate(ctx, migration):
     command(ctx, f"sqlmigrate {migration}")
 
 
-@task(help={"migration": "Which migration should be applied/unapplied. e.g. \"inv migrate -m 'clinic 00145'\""})
+@task(
+    help={
+        "migration": "Which migration should be applied/unapplied. e.g. \"inv migrate -m 'clinic 00145'\""
+    }
+)
 def migrate(ctx, migration=""):
     """Call the django migrate command"""
     command(ctx, f"migrate {migration}")
 
 
 @task
-def makemessages(ctx):
-    """Update the messages file"""
-    ctx.run("django-admin makemessages -l en --ignore venv -e py")
-
-
-@task
 def bash(ctx, service="django", rest="", hide=False):
     """Invoke bash in the specified service. Django by default"""
     command = f'-c "{rest}"' if rest else ""
-    ctx.run(f"docker compose exec {service} bash {command}", pty=True, hide=hide)
-
-
-@task
-def compilemessages(ctx):
-    """Update the messages file"""
-    ctx.run("django-admin compilemessages --ignore venv")
+    ctx.run(
+        f"docker compose -f {ctx.DEV_DOCKER_COMPOSE} exec {service} bash {command}",
+        pty=True,
+        hide=hide,
+    )
 
 
 def copy_file(file, destination):
@@ -290,6 +301,10 @@ def copy_folder(folder, destination):
         copy_folder(folder, destination)
 
 
+class OwnershipException(Exception):
+    pass
+
+
 def check_project_ownership(path):
     """
     Recursively check if all files in the project are owned by the user running the script,
@@ -302,7 +317,7 @@ def check_project_ownership(path):
         file = Path(path)
         if not file.stat().st_uid == os.getuid() and file.is_symlink() is False:
             print(f"File {path} is not owned by the user running the script.")
-            raise Exception
+            raise OwnershipException
 
 
 @task
@@ -316,14 +331,20 @@ def clean(ctx):
 
     try:
         check_project_ownership(project_root)
-    except Exception:
+    except OwnershipException:
         print(
             f"There are files that aren't owned by the user running the script, run `sudo chown -R $USER {project_root}` and try again."
         )
         return
+    except Exception as e:
+        print(f"Error checking project ownership: {e}")
 
     BACK_DATE_FORMAT = r"%m-%d-%yT%H%M%S"
-    backup_dir = ctx.CLEAN_ENV.BAK_DIR if ctx.CLEAN_ENV.BAK_DIR[-1] == "/" else ctx.CLEAN_ENV.BAK_DIR + "/"
+    backup_dir = (
+        ctx.CLEAN_ENV.BAK_DIR
+        if ctx.CLEAN_ENV.BAK_DIR[-1] == "/"
+        else ctx.CLEAN_ENV.BAK_DIR + "/"
+    )
     folder_name = datetime.now().strftime(BACK_DATE_FORMAT)
     backup_folder_name = f"{backup_dir}{folder_name}/"
     Path(backup_folder_name).mkdir(parents=True, exist_ok=True)
@@ -350,35 +371,39 @@ def clean(ctx):
     print("Done!")
 
 
-@task(pre=[makemessages, compilemessages])
-def translate(ctx):
-    """Run makemessages and compilemessages."""
-    ...
-
-
 @task(pre=[down], post=[db])
 def reset(ctx):
     """Relaunch the docker environment and fill the db with sample data"""
     up(ctx)
 
 
-@task(help={"service": "Service that should be restarted, comma-separated. All services by default"})
+@task(
+    help={
+        "service": "Service that should be restarted, comma-separated. All services by default"
+    }
+)
 def restart(ctx, service=""):
     """Restart a service. All services by default."""
     append = " ".join(service.split(",")) if service else ""
-    ctx.run(f"docker compose restart -t0 {append}", pty=True)
+    ctx.run(
+        f"docker compose -f {ctx.DEV_DOCKER_COMPOSE} restart -t0 {append}", pty=True
+    )
 
 
 @task
 def shell(ctx):
     """Invoke django shell."""
-    command(ctx, "shell")
+    command(ctx, "shell", executor=ctx.EXECUTOR.ENTRYPOINT)
 
 
-@task(help={"script": "Script that should be runned by Django. Path relative to the django project folder."})
+@task(
+    help={
+        "script": "Script that should be runned by Django. Path relative to the django project folder."
+    }
+)
 def script(ctx, script):
     """Invoke a django script."""
-    bash(ctx, rest=f"/entrypoint.sh ./manage.py shell < {script}")
+    bash(ctx, rest=f"{ctx.EXECUTOR.ENTRYPOINT} ./manage.py shell < {script}")
 
 
 @task
@@ -392,3 +417,33 @@ def docker_prune(ctx):
     """Run the docker system prune command to remove all unused images, containers, networks and volumes"""
     ctx.run("docker system prune -af --volumes")
     ctx.run("docker container prune -f")
+    ctx.run("docker builder prune -f")
+
+
+@task
+def setup_cypress(ctx):
+    """Check if Cypress is configured and install if necessary."""
+    e2e_folder = Path(__file__).parent / "e2e"
+    node_modules = e2e_folder / "node_modules"
+
+    if not node_modules.exists():
+        print(f"Node modules not found in {e2e_folder}. Installing dependencies...")
+        os.chdir(e2e_folder)
+        try:
+            ctx.run("npm install", pty=True)
+            print("Dependencies installed successfully.")
+        except Exception as e:
+            print(f"An error occurred while installing dependencies: {e}")
+    else:
+        print("Cypress is already configured.")
+
+
+@task(pre=[setup_cypress])
+def cypress(ctx):
+    """Open the Cypress GUI"""
+    e2e_folder = Path(__file__).parent / "e2e"
+    os.chdir(e2e_folder)
+    try:
+        ctx.run(f"CYPRESS_BASE_URL={ctx.CYPRESS_BASE_URL} npx cypress open", pty=True)
+    except Exception as e:
+        print(f"An error occurred while opening Cypress: {e}")

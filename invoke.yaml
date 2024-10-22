@@ -1,5 +1,9 @@
-DEV_DOCKER_COMPOSE: &docker_dev docker-compose.yml
+DEV_DOCKER_COMPOSE: &docker_dev docker-compose-osx.yml
 ENV_FILE: &env_file .env
+
+EXECUTOR:
+  PYTHON: python3
+  ENTRYPOINT: /entrypoint.sh
 
 DOCKER:
   BUILD_ARGS:
@@ -21,8 +25,8 @@ CLEAN_ENV:
     - tasks.py
   BK_FOLDERS:
     - *vs_code_settings
-    - venv
     - scratches
   REMOVE_BACKUP_AFTER_COPY: true
 
-SECONDS_SLEEP: 1
+SECONDS_SLEEP: 3
+CYPRESS_BASE_URL: http://localhost:8000
